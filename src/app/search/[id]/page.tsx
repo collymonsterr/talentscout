@@ -225,6 +225,7 @@ export default function SearchResultsPage() {
       if (status === "criteria_ready" && current.candidates.length === 0 && !pipelineRef.current.triggered.has("reddit")) {
         pipelineRef.current.triggered.add("reddit");
 
+        let redditOk = false;
         try {
           const res = await fetch("/api/search/reddit", {
             method: "POST",
@@ -232,29 +233,45 @@ export default function SearchResultsPage() {
             body: JSON.stringify({ searchId: id }),
           });
           const result = await res.json();
-          if (result.itemCount) {
+          if (result.itemCount && result.itemCount > 0) {
             setRedditItemCount(result.itemCount);
+            redditOk = true;
+          } else if (res.ok && result.itemCount === 0) {
+            setError("No Reddit results found for your search. Try a broader description.");
+            await fetchSearch();
+            return;
+          }
+          if (!res.ok) {
+            setError("Reddit search failed. This can happen if Reddit is slow — try again in a minute.");
+            await fetchSearch();
+            return;
           }
         } catch {
-          console.error("Reddit search failed");
+          setError("Reddit search timed out. Try again — Reddit can be slow sometimes.");
+          await fetchSearch();
+          return;
         }
 
         // Refresh state after reddit search
         const afterReddit = await fetchSearch();
         if (!afterReddit) return;
 
-        // Step 3: Now trigger scoring
-        if (!pipelineRef.current.triggered.has("scoring")) {
+        // Step 3: Only trigger scoring if Reddit actually returned results
+        if (redditOk && !pipelineRef.current.triggered.has("scoring")) {
           pipelineRef.current.triggered.add("scoring");
 
           try {
-            await fetch("/api/candidates/score", {
+            const scoreRes = await fetch("/api/candidates/score", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ searchId: id }),
             });
+            if (!scoreRes.ok) {
+              const scoreData = await scoreRes.json();
+              setError(scoreData.error || "Scoring failed. Please try a new search.");
+            }
           } catch {
-            console.error("Scoring failed");
+            setError("Scoring timed out. Try again.");
           }
 
           // Final refresh
