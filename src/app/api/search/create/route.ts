@@ -58,7 +58,7 @@ export async function POST(request: Request) {
         .eq('id', search.id);
 
       return NextResponse.json(
-        { error: 'Failed to generate search criteria', searchId: search.id },
+        { error: `Failed to generate search criteria: ${aiError instanceof Error ? aiError.message : String(aiError)}`, searchId: search.id },
         { status: 500 }
       );
     }
