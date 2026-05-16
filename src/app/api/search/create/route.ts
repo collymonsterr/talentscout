@@ -21,7 +21,7 @@ export async function POST(request: Request) {
 
     if (searchError || !search) {
       console.error('Failed to create search:', searchError);
-      return NextResponse.json({ error: 'Failed to create search' }, { status: 500 });
+      return NextResponse.json({ error: `Failed to create search: ${searchError?.message || 'Unknown error'}` }, { status: 500 });
     }
 
     try {
