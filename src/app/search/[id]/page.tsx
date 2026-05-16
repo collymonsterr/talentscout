@@ -104,16 +104,21 @@ function CandidateCard({ candidate }: { candidate: Candidate }) {
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <CardTitle className="text-base">
-              <Link
-                href={`/candidates/${candidate.id}`}
-                className="hover:underline"
-              >
+            <div className="flex items-center gap-2">
+              <CardTitle className="text-base">
                 u/{candidate.username}
-              </Link>
-            </CardTitle>
+              </CardTitle>
+              <a
+                href={`https://www.reddit.com/user/${candidate.username}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Reddit profile &rarr;
+              </a>
+            </div>
             {candidate.likely_expertise && (
-              <p className="text-sm text-muted-foreground mt-1 line-clamp-1">
+              <p className="text-sm text-muted-foreground mt-1">
                 {candidate.likely_expertise}
               </p>
             )}
@@ -121,12 +126,29 @@ function CandidateCard({ candidate }: { candidate: Candidate }) {
           <ScoreBadge score={candidate.overall_score} />
         </div>
       </CardHeader>
-      <CardContent className="pt-0">
+      <CardContent className="pt-0 space-y-3">
         {candidate.summary && (
-          <p className="text-sm text-muted-foreground mb-3 line-clamp-2">
+          <p className="text-sm text-muted-foreground">
             {candidate.summary}
           </p>
         )}
+
+        {candidate.strengths?.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {candidate.strengths.slice(0, 3).map((s, i) => (
+              <span key={i} className="inline-flex items-center gap-1 text-xs bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-md">
+                <span className="text-emerald-500">+</span> {s}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {candidate.outreach_angle && (
+          <p className="text-xs text-muted-foreground italic">
+            Outreach angle: {candidate.outreach_angle}
+          </p>
+        )}
+
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <span>{candidate.evidence_count} evidence items</span>
           <span className="text-border">|</span>
@@ -136,15 +158,25 @@ function CandidateCard({ candidate }: { candidate: Candidate }) {
             </Badge>
           ))}
           {(candidate.relevant_subreddits?.length || 0) > 3 && (
-            <span>+{candidate.relevant_subreddits.length - 3} more</span>
+            <span>+{candidate.relevant_subreddits!.length - 3} more</span>
           )}
         </div>
-        <div className="mt-3 flex gap-2">
+
+        <div className="flex gap-2 pt-1">
           <Link href={`/candidates/${candidate.id}`}>
             <Button variant="outline" size="sm">
-              View details
+              View full profile
             </Button>
           </Link>
+          <a
+            href={`https://www.reddit.com/message/compose/?to=${candidate.username}`}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <Button variant="outline" size="sm">
+              Message on Reddit
+            </Button>
+          </a>
         </div>
       </CardContent>
     </Card>
