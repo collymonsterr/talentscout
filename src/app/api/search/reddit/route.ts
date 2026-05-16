@@ -68,10 +68,7 @@ export async function POST(request: Request) {
       }
     }
 
-    await supabaseAdmin
-      .from('searches')
-      .update({ status: 'criteria_ready' })
-      .eq('id', searchId);
+    // Status stays at criteria_ready — the frontend pipeline triggers scoring next
 
     return NextResponse.json({ itemCount: results.length });
   } catch (error) {

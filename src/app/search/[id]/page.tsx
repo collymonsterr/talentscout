@@ -9,14 +9,80 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { SearchWithDetails, Candidate } from "@/lib/types";
 
-const STATUS_LABELS: Record<string, string> = {
-  generating_criteria: "Generating search criteria...",
-  criteria_ready: "Criteria ready",
-  searching_reddit: "Searching Reddit...",
-  scoring_candidates: "Analysing candidates...",
-  complete: "Complete",
-  error: "Error",
-};
+const PIPELINE_STEPS = [
+  { key: "criteria", label: "Generating search criteria", time: "~10s" },
+  { key: "reddit", label: "Searching Reddit", time: "~1-2 min" },
+  { key: "scoring", label: "Analysing and scoring candidates", time: "~30s" },
+  { key: "done", label: "Complete", time: "" },
+];
+
+function getPipelineStep(status: string, hasRedditItems: boolean): number {
+  switch (status) {
+    case "generating_criteria":
+      return 0;
+    case "criteria_ready":
+      return hasRedditItems ? 2 : 1;
+    case "searching_reddit":
+      return 1;
+    case "scoring_candidates":
+      return 2;
+    case "complete":
+      return 3;
+    default:
+      return -1;
+  }
+}
+
+function ProgressPipeline({ currentStep }: { currentStep: number }) {
+  if (currentStep < 0 || currentStep >= 3) return null;
+
+  return (
+    <Card className="mb-8">
+      <CardContent className="pt-6 pb-6">
+        <div className="space-y-3">
+          {PIPELINE_STEPS.map((step, i) => {
+            const isDone = i < currentStep;
+            const isActive = i === currentStep;
+            const isPending = i > currentStep;
+
+            return (
+              <div key={step.key} className="flex items-center gap-3">
+                <div className="flex-shrink-0 w-6 h-6 flex items-center justify-center">
+                  {isDone ? (
+                    <div className="w-5 h-5 rounded-full bg-foreground flex items-center justify-center">
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                        <path d="M2.5 6L5 8.5L9.5 4" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    </div>
+                  ) : isActive ? (
+                    <div className="w-5 h-5 rounded-full border-2 border-foreground flex items-center justify-center">
+                      <div className="w-2 h-2 rounded-full bg-foreground animate-pulse" />
+                    </div>
+                  ) : (
+                    <div className="w-5 h-5 rounded-full border-2 border-muted-foreground/30" />
+                  )}
+                </div>
+                <span className={`text-sm ${isActive ? "font-medium" : isDone ? "text-muted-foreground" : "text-muted-foreground/50"}`}>
+                  {step.label}
+                  {isActive && step.time && (
+                    <span className="text-muted-foreground font-normal ml-2">{step.time}</span>
+                  )}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+        <div className="mt-4 pt-4 border-t border-border">
+          <p className="text-xs text-muted-foreground">
+            {currentStep === 0 && "AI is analysing your brief and generating structured search criteria..."}
+            {currentStep === 1 && "Searching across relevant subreddits for high-signal posts and comments. This takes a minute or two."}
+            {currentStep === 2 && "Grouping evidence by user, scoring candidates, and generating summaries..."}
+          </p>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 function ScoreBadge({ score }: { score: number }) {
   const color =
@@ -90,7 +156,11 @@ export default function SearchResultsPage() {
   const [data, setData] = useState<SearchWithDetails | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const triggeredRef = useRef<Set<string>>(new Set());
+  const [redditItemCount, setRedditItemCount] = useState<number | null>(null);
+  const pipelineRef = useRef<{ triggered: Set<string>; running: boolean }>({
+    triggered: new Set(),
+    running: false,
+  });
 
   const fetchSearch = useCallback(async () => {
     try {
@@ -98,7 +168,7 @@ export default function SearchResultsPage() {
       if (!res.ok) throw new Error("Failed to fetch search");
       const result = await res.json();
       setData(result);
-      return result;
+      return result as SearchWithDetails;
     } catch {
       setError("Failed to load search results");
       return null;
@@ -107,67 +177,99 @@ export default function SearchResultsPage() {
     }
   }, [id]);
 
-  const triggerRedditSearch = useCallback(async () => {
-    if (triggeredRef.current.has("reddit")) return;
-    triggeredRef.current.add("reddit");
-    try {
-      await fetch("/api/search/reddit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ searchId: id }),
-      });
-    } catch {
-      console.error("Reddit search trigger failed");
-    }
-  }, [id]);
+  // Run the full pipeline automatically
+  const runPipeline = useCallback(async () => {
+    if (pipelineRef.current.running) return;
+    pipelineRef.current.running = true;
 
-  const triggerScoring = useCallback(async () => {
-    if (triggeredRef.current.has("scoring")) return;
-    triggeredRef.current.add("scoring");
     try {
-      await fetch("/api/candidates/score", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ searchId: id }),
-      });
-    } catch {
-      console.error("Scoring trigger failed");
-    }
-  }, [id]);
+      // Step 1: Check current state
+      const current = await fetchSearch();
+      if (!current) return;
 
+      const status = current.search.status;
+
+      // Step 2: If criteria ready and no candidates, run Reddit search
+      if (status === "criteria_ready" && current.candidates.length === 0 && !pipelineRef.current.triggered.has("reddit")) {
+        pipelineRef.current.triggered.add("reddit");
+
+        try {
+          const res = await fetch("/api/search/reddit", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ searchId: id }),
+          });
+          const result = await res.json();
+          if (result.itemCount) {
+            setRedditItemCount(result.itemCount);
+          }
+        } catch {
+          console.error("Reddit search failed");
+        }
+
+        // Refresh state after reddit search
+        const afterReddit = await fetchSearch();
+        if (!afterReddit) return;
+
+        // Step 3: Now trigger scoring
+        if (!pipelineRef.current.triggered.has("scoring")) {
+          pipelineRef.current.triggered.add("scoring");
+
+          try {
+            await fetch("/api/candidates/score", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ searchId: id }),
+            });
+          } catch {
+            console.error("Scoring failed");
+          }
+
+          // Final refresh
+          await fetchSearch();
+        }
+      }
+
+      // If somehow we're at criteria_ready with no reddit triggered but there might be items
+      // (e.g. page refresh after reddit completed), trigger scoring
+      if (status === "criteria_ready" && current.candidates.length === 0 && pipelineRef.current.triggered.has("reddit") && !pipelineRef.current.triggered.has("scoring")) {
+        pipelineRef.current.triggered.add("scoring");
+        try {
+          await fetch("/api/candidates/score", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ searchId: id }),
+          });
+        } catch {
+          console.error("Scoring failed");
+        }
+        await fetchSearch();
+      }
+    } finally {
+      pipelineRef.current.running = false;
+    }
+  }, [id, fetchSearch]);
+
+  // Initial load and pipeline trigger
   useEffect(() => {
-    fetchSearch();
-  }, [fetchSearch]);
+    fetchSearch().then((result) => {
+      if (result && result.search.status === "criteria_ready" && result.candidates.length === 0) {
+        runPipeline();
+      }
+    });
+  }, [fetchSearch, runPipeline]);
 
+  // Poll while processing
   useEffect(() => {
     if (!data?.search) return;
     const status = data.search.status;
+    const isProcessing = ["generating_criteria", "searching_reddit", "scoring_candidates"].includes(status);
 
-    if (status === "criteria_ready" && data.candidates.length === 0) {
-      triggerRedditSearch().then(() => {
-        setTimeout(fetchSearch, 2000);
-      });
-      return;
-    }
-
-    if (status === "searching_reddit" || (status === "criteria_ready" && data.candidates.length === 0)) {
+    if (isProcessing) {
       const interval = setInterval(fetchSearch, 3000);
       return () => clearInterval(interval);
     }
-
-    if (status === "criteria_ready" && !triggeredRef.current.has("scoring")) {
-      // Reddit items exist, trigger scoring
-      triggerScoring().then(() => {
-        setTimeout(fetchSearch, 2000);
-      });
-      return;
-    }
-
-    if (status === "scoring_candidates") {
-      const interval = setInterval(fetchSearch, 3000);
-      return () => clearInterval(interval);
-    }
-  }, [data?.search?.status, data?.candidates.length, fetchSearch, triggerRedditSearch, triggerScoring]);
+  }, [data?.search?.status, fetchSearch]);
 
   if (loading) {
     return (
@@ -175,11 +277,7 @@ export default function SearchResultsPage() {
         <Skeleton className="h-8 w-64 mb-4" />
         <Skeleton className="h-4 w-full mb-2" />
         <Skeleton className="h-4 w-3/4 mb-8" />
-        <div className="space-y-4">
-          {[1, 2, 3].map((i) => (
-            <Skeleton key={i} className="h-32 w-full" />
-          ))}
-        </div>
+        <Skeleton className="h-48 w-full rounded-lg" />
       </div>
     );
   }
@@ -196,24 +294,21 @@ export default function SearchResultsPage() {
   }
 
   const { search, criteria, candidates } = data;
-  const isProcessing = ["generating_criteria", "searching_reddit", "scoring_candidates"].includes(search.status);
+  const hasRedditItems = redditItemCount !== null && redditItemCount > 0;
+  const currentStep = getPipelineStep(search.status, hasRedditItems);
+  const isProcessing = currentStep >= 0 && currentStep < 3;
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-12">
       <div className="mb-8">
-        <div className="flex items-center gap-3 mb-2">
-          <h1 className="text-xl font-semibold">Search Results</h1>
-          <Badge variant={search.status === "complete" ? "default" : "secondary"}>
-            {STATUS_LABELS[search.status] || search.status}
-          </Badge>
-        </div>
+        <h1 className="text-xl font-semibold mb-2">Search Results</h1>
         <p className="text-sm text-muted-foreground">{search.user_brief}</p>
       </div>
 
-      {search.status === "error" && search.error_message && (
+      {search.status === "error" && (
         <Card className="mb-8 border-destructive/50">
           <CardContent className="pt-6">
-            <p className="text-sm text-destructive">{search.error_message}</p>
+            <p className="text-sm text-destructive">{search.error_message || "Something went wrong."}</p>
             <Link href="/">
               <Button variant="outline" size="sm" className="mt-3">
                 Try a new search
@@ -222,6 +317,8 @@ export default function SearchResultsPage() {
           </CardContent>
         </Card>
       )}
+
+      {isProcessing && <ProgressPipeline currentStep={currentStep} />}
 
       {criteria && (
         <Card className="mb-8">
@@ -275,17 +372,6 @@ export default function SearchResultsPage() {
             )}
           </CardContent>
         </Card>
-      )}
-
-      {isProcessing && (
-        <div className="space-y-4 mb-8">
-          {[1, 2, 3].map((i) => (
-            <Skeleton key={i} className="h-32 w-full rounded-lg" />
-          ))}
-          <p className="text-sm text-muted-foreground text-center">
-            {STATUS_LABELS[search.status]}
-          </p>
-        </div>
       )}
 
       {candidates.length > 0 && (
