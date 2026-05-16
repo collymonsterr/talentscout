@@ -22,17 +22,26 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Search criteria not found' }, { status: 404 });
     }
 
+    console.log(`[Search] Starting Reddit search for ${searchId}`);
+    console.log(`[Search] Subreddits: ${criteria.subreddits?.join(', ')}`);
+    console.log(`[Search] Phrases: ${criteria.search_phrases?.join(', ')}`);
+
     await supabaseAdmin
       .from('searches')
       .update({ status: 'searching_reddit' })
       .eq('id', searchId);
 
+    const startTime = Date.now();
     const results = await executeSearch(
-      criteria.subreddits,
-      criteria.search_phrases,
+      criteria.subreddits || [],
+      criteria.search_phrases || [],
     );
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
+
+    console.log(`[Search] Reddit search complete: ${results.length} items in ${elapsed}s`);
 
     if (results.length === 0) {
+      console.log('[Search] No results found — setting error status');
       await supabaseAdmin
         .from('searches')
         .update({ status: 'error', error_message: 'No Reddit results found. Try a broader search.' })
@@ -57,6 +66,7 @@ export async function POST(request: Request) {
 
     // Insert in batches to avoid payload limits
     const batchSize = 100;
+    let insertedCount = 0;
     for (let i = 0; i < items.length; i += batchSize) {
       const batch = items.slice(i, i + batchSize);
       const { error: insertError } = await supabaseAdmin
@@ -64,15 +74,17 @@ export async function POST(request: Request) {
         .upsert(batch, { onConflict: 'search_id,reddit_id' });
 
       if (insertError) {
-        console.error('Failed to insert reddit items batch:', insertError);
+        console.error(`[Search] Failed to insert batch ${i}:`, insertError);
+      } else {
+        insertedCount += batch.length;
       }
     }
 
-    // Status stays at criteria_ready — the frontend pipeline triggers scoring next
+    console.log(`[Search] Inserted ${insertedCount} items into database`);
 
     return NextResponse.json({ itemCount: results.length });
   } catch (error) {
-    console.error('Reddit search error:', error);
+    console.error('[Search] Reddit search error:', error);
     return NextResponse.json({ error: 'Reddit search failed' }, { status: 500 });
   }
 }
